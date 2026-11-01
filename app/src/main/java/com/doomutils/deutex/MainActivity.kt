@@ -69,7 +69,28 @@ private fun readGraphicOffsets(bytes: ByteArray, entry: WadEntry): Pair<Int, Int
         bytes[start + 1] == 0x50.toByte() &&
         bytes[start + 2] == 0x4E.toByte() &&
         bytes[start + 3] == 0x47.toByte()
-    if (isPng) return 0 to 0
+    if (isPng) {
+        // SLADE-compatible PNG offsets are stored in the ancillary "grAb" chunk.
+        val end = (entry.offset + entry.size).coerceAtMost(bytes.size.toLong()).toInt()
+        var position = start + 8
+        while (position + 12 <= end) {
+            val chunkLength = ByteBuffer.wrap(bytes, position, 4)
+                .order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
+            val dataStart = position + 8
+            val chunkEnd = dataStart.toLong() + chunkLength + 4L
+            if (chunkEnd > end.toLong() || chunkLength > Int.MAX_VALUE) break
+            val isGrab = bytes[position + 4] == 'g'.code.toByte() &&
+                bytes[position + 5] == 'r'.code.toByte() &&
+                bytes[position + 6] == 'A'.code.toByte() &&
+                bytes[position + 7] == 'b'.code.toByte()
+            if (isGrab && chunkLength >= 8L) {
+                val offsets = ByteBuffer.wrap(bytes, dataStart, 8).order(ByteOrder.BIG_ENDIAN)
+                return offsets.int to offsets.int
+            }
+            position = chunkEnd.toInt()
+        }
+        return 0 to 0
+    }
     val header = ByteBuffer.wrap(bytes, start + 4, 4).order(ByteOrder.LITTLE_ENDIAN)
     return header.short.toInt() to header.short.toInt()
 }
