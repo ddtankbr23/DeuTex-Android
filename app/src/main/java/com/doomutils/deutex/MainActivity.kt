@@ -29,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -36,9 +37,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 
-private data class PreviewResult(val bitmap: Bitmap? = null, val error: String? = null)
+private data class PreviewResult(
+    val bitmap: Bitmap? = null,
+    val error: String? = null,
+    val offsetX: Int = 0,
+    val offsetY: Int = 0
+)
 
 private fun formatByteSize(bytes: Long): String {
     if (bytes < 1000L) return "$bytes B"
@@ -52,6 +60,22 @@ private fun formatByteSize(bytes: Long): String {
     return String.format(Locale.ROOT, "%.1f %s", value, units[unitIndex])
 }
 
+private fun readGraphicOffsets(bytes: ByteArray, entry: WadEntry): Pair<Int, Int> {
+    if (entry.size < 8L || entry.offset < 0L || entry.offset + 8L > bytes.size.toLong()) {
+        return 0 to 0
+    }
+    val start = entry.offset.toInt()
+    val isPng = bytes[start] == 0x89.toByte() &&
+        bytes[start + 1] == 0x50.toByte() &&
+        bytes[start + 2] == 0x4E.toByte() &&
+        bytes[start + 3] == 0x47.toByte()
+    if (isPng) return 0 to 0
+    val header = ByteBuffer.wrap(bytes, start + 4, 4).order(ByteOrder.LITTLE_ENDIAN)
+    return header.short.toInt() to header.short.toInt()
+}
+
+private fun entryKey(entry: WadEntry): String = "${entry.offset}:${entry.name}"
+
 @Composable
 private fun DeuTexScreen(nativeStatus: String) {
     val context = LocalContext.current
@@ -61,6 +85,8 @@ private fun DeuTexScreen(nativeStatus: String) {
     var message by remember { mutableStateOf("Abre un archivo .wad para explorar su contenido.") }
     var searchQuery by remember { mutableStateOf("") }
     var selectedEntry by remember { mutableStateOf<WadEntry?>(null) }
+    var editorOpen by remember { mutableStateOf(false) }
+    val editedOffsets = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -73,6 +99,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 wadBytes = bytes
                 wadInfo = parsed
                 selectedEntry = null
+                editorOpen = false
+                editedOffsets.clear()
                 searchQuery = ""
                 fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -83,6 +111,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 wadInfo = null
                 wadBytes = null
                 selectedEntry = null
+                editorOpen = false
+                editedOffsets.clear()
                 message = it.message ?: "No se pudo abrir el WAD."
             }
         }
@@ -98,9 +128,11 @@ private fun DeuTexScreen(nativeStatus: String) {
             withContext(Dispatchers.Default) {
                 runCatching {
                     val palette = info.entries.firstOrNull { it.name.equals("PLAYPAL", ignoreCase = true) }
-                    DoomPatchPreview.decode(bytes, entry, palette)
+                    val bitmap = DoomPatchPreview.decode(bytes, entry, palette)
+                    val offsets = readGraphicOffsets(bytes, entry)
+                    PreviewResult(bitmap = bitmap, offsetX = offsets.first, offsetY = offsets.second)
                 }.fold(
-                    onSuccess = { PreviewResult(bitmap = it) },
+                    onSuccess = { it },
                     onFailure = { PreviewResult(error = it.message ?: "No se pudo interpretar este gráfico.") }
                 )
             }
@@ -158,7 +190,10 @@ private fun DeuTexScreen(nativeStatus: String) {
                             val entry = indexed.value
                             Row(
                                 Modifier.fillMaxWidth()
-                                    .clickable { selectedEntry = entry }
+                                    .clickable {
+                                        editorOpen = false
+                                        selectedEntry = entry
+                                    }
                                     .padding(vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -183,8 +218,12 @@ private fun DeuTexScreen(nativeStatus: String) {
         }
     }
 
-    if (selectedEntry != null) {
-        val entry = selectedEntry!!
+    val entry = selectedEntry
+    if (entry != null && !editorOpen) {
+        val key = entryKey(entry)
+        val currentOffsets = editedOffsets[key]
+        val offsetX = currentOffsets?.first ?: preview?.offsetX ?: 0
+        val offsetY = currentOffsets?.second ?: preview?.offsetY ?: 0
         AlertDialog(
             onDismissRequest = { selectedEntry = null },
             title = { Text(entry.name) },
@@ -193,19 +232,45 @@ private fun DeuTexScreen(nativeStatus: String) {
                     Text("Tamaño: ${formatByteSize(entry.size)}")
                     when {
                         preview == null -> Text("Analizando recurso…")
-                        preview?.bitmap != null -> Image(
-                            bitmap = preview!!.bitmap!!.asImageBitmap(),
-                            contentDescription = "Vista previa de ${entry.name}",
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
-                            contentScale = ContentScale.Fit
-                        )
+                        preview?.bitmap != null -> {
+                            Image(
+                                bitmap = preview!!.bitmap!!.asImageBitmap(),
+                                contentDescription = "Vista previa de ${entry.name}",
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                            Text("Offset X: $offsetX · Offset Y: $offsetY")
+                            if (currentOffsets != null) {
+                                Text("Cambios temporales sin guardar en el WAD.", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                         else -> Text(preview?.error ?: "Formato gráfico no compatible.")
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
+                Row {
+                    if (preview?.bitmap != null) {
+                        TextButton(onClick = { editorOpen = true }) { Text("Editar") }
+                    }
+                    TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
+                }
             }
+        )
+    }
+
+    if (entry != null && editorOpen && preview?.bitmap != null) {
+        val key = entryKey(entry)
+        val currentOffsets = editedOffsets[key]
+        GraphicEditorDialog(
+            bitmap = preview!!.bitmap!!,
+            initialOffsetX = currentOffsets?.first ?: preview!!.offsetX,
+            initialOffsetY = currentOffsets?.second ?: preview!!.offsetY,
+            onApply = { x, y ->
+                editedOffsets[key] = x to y
+                editorOpen = false
+            },
+            onDismiss = { editorOpen = false }
         )
     }
 }
