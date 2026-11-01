@@ -28,17 +28,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 
-class MainActivity : ComponentActivity() {
-    external fun nativeEngineStatus(): String
+private fun formatByteSize(bytes: Long): String {
+    if (bytes < 1000L) return "$bytes B"
 
-    companion object {
-        init { System.loadLibrary("deutex_native") }
-    }
+    val units = arrayOf("KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var unitIndex = -1
+    do {
+        value /= 1000.0
+        unitIndex++
+    } while (value >= 1000.0 && unitIndex < units.lastIndex)
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent { DeuTexScreen(nativeEngineStatus()) }
-    }
+    return String.format(Locale.ROOT, "%.1f %s", value, units[unitIndex])
 }
 
 @Composable
@@ -129,7 +130,7 @@ private fun DeuTexScreen(nativeStatus: String) {
                                     modifier = Modifier.weight(1f),
                                     maxLines = 1
                                 )
-                                Text("${entry.size} B", style = MaterialTheme.typography.bodySmall)
+                                Text(formatByteSize(entry.size.toLong()), style = MaterialTheme.typography.bodySmall)
                             }
                             Divider()
                         }
@@ -143,5 +144,18 @@ private fun DeuTexScreen(nativeStatus: String) {
                 }
             }
         }
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    external fun nativeEngineStatus(): String
+
+    companion object {
+        init { System.loadLibrary("deutex_native") }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { DeuTexScreen(nativeEngineStatus()) }
     }
 }
