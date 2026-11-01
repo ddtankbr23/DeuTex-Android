@@ -1,6 +1,8 @@
 package com.doomutils.deutex
 
 import android.graphics.Bitmap
+import android.graphics.Paint
+import android.graphics.RectF
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +29,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -57,6 +60,9 @@ fun GraphicEditorDialog(
     }
     val zoom = remember { mutableFloatStateOf(1f) }
     val image = remember(bitmap) { bitmap.asImageBitmap() }
+    val bitmapPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -116,11 +122,15 @@ fun GraphicEditorDialog(
                     val center = Offset(size.width / 2f, size.height / 2f)
                     val left = center.x - offsetX.intValue * fit
                     val top = center.y - offsetY.intValue * fit
-                    drawImage(
-                        image = image,
-                        dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-                        dstSize = IntSize(imageWidth, imageHeight)
+
+                    // Draw through Android's native canvas for consistent Bitmap rendering.
+                    drawContext.canvas.nativeCanvas.drawBitmap(
+                        bitmap,
+                        null,
+                        RectF(left, top, left + imageWidth, top + imageHeight),
+                        bitmapPaint
                     )
+
                     val arm = 14.dp.toPx()
                     drawLine(Color.Red, Offset(center.x - arm, center.y), Offset(center.x + arm, center.y), 1.5.dp.toPx())
                     drawLine(Color.Red, Offset(center.x, center.y - arm), Offset(center.x, center.y + arm), 1.5.dp.toPx())
