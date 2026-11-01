@@ -2,6 +2,7 @@ package com.doomutils.deutex
 
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -54,7 +55,10 @@ private fun DeuTexScreen(nativeStatus: String) {
                     ?: error("No se pudo leer el archivo.")
                 val parsed = WadReader.parse(bytes)
                 wadInfo = parsed
-                fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Archivo WAD"
+                fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameColumn >= 0 && cursor.moveToFirst()) cursor.getString(nameColumn) else null
+                } ?: "Archivo WAD"
                 message = "${parsed.type} · ${parsed.entries.size} recursos encontrados"
             }.onFailure {
                 wadInfo = null
@@ -87,13 +91,21 @@ private fun DeuTexScreen(nativeStatus: String) {
                         Text("Tamaño", style = MaterialTheme.typography.titleSmall)
                     }
                     Divider()
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        itemsIndexed(info.entries) { index, entry ->
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        itemsIndexed(
+                            items = info.entries,
+                            key = { index, entry -> "${entry.offset}:${entry.name}:$index" },
+                            contentType = { _, _ -> "wad_entry" }
+                        ) { index, entry ->
                             Row(
                                 Modifier.fillMaxWidth().padding(vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("${index + 1}. ${entry.name}", modifier = Modifier.weight(1f))
+                                Text(
+                                    text = "${index + 1}. ${entry.name}",
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1
+                                )
                                 Text("${entry.size} B", style = MaterialTheme.typography.bodySmall)
                             }
                             Divider()
