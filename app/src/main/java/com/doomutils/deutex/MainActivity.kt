@@ -2,6 +2,7 @@ package com.doomutils.deutex
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -272,6 +273,7 @@ private fun DeuTexScreen(nativeStatus: String) {
     var selectedEntry by remember { mutableStateOf<WadEntry?>(null) }
     var editorOpen by remember { mutableStateOf(false) }
     val editedOffsets = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
+    val replacementPngs = remember { mutableStateMapOf<String, ByteArray>() }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -286,6 +288,7 @@ private fun DeuTexScreen(nativeStatus: String) {
                 selectedEntry = null
                 editorOpen = false
                 editedOffsets.clear()
+                replacementPngs.clear()
                 searchQuery = ""
                 fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -298,6 +301,7 @@ private fun DeuTexScreen(nativeStatus: String) {
                 selectedEntry = null
                 editorOpen = false
                 editedOffsets.clear()
+                replacementPngs.clear()
                 message = it.message ?: "No se pudo abrir el WAD."
             }
         }
@@ -322,6 +326,29 @@ private fun DeuTexScreen(nativeStatus: String) {
         pendingSaveBytes = null
     }
 
+
+    val importPngLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val target = selectedEntry
+        if (uri != null && target != null) {
+            runCatching {
+                val png = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: error("No se pudo leer la imagen seleccionada.")
+                require(isPng(png)) { "Por ahora solo se pueden importar imágenes PNG." }
+                val bitmap = BitmapFactory.decodeByteArray(png, 0, png.size)
+                    ?: error("Android no pudo decodificar esta imagen PNG.")
+                require(bitmap.width <= 8192 && bitmap.height <= 8192) {
+                    "La imagen supera el límite provisional de 8192 × 8192 píxeles."
+                }
+                replacementPngs[entryKey(target)] = png
+                message = "PNG preparado para reemplazar " + target.name + ". Exporta el WAD para guardar el cambio."
+            }.onFailure {
+                message = it.message ?: "No se pudo importar el PNG."
+            }
+        }
+    }
+
     var pendingExportBitmap by remember { mutableStateOf<Bitmap?>(null) }
     val exportPngLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("image/png")
@@ -344,17 +371,24 @@ private fun DeuTexScreen(nativeStatus: String) {
         pendingExportBitmap = null
     }
 
-    val preview by produceState<PreviewResult?>(initialValue = null, selectedEntry, wadBytes, wadInfo) {
+    val selectedReplacement = selectedEntry?.let { replacementPngs[entryKey(it)] }
+    val preview by produceState<PreviewResult?>(initialValue = null, selectedEntry, wadBytes, wadInfo, selectedReplacement) {
         val entry = selectedEntry
         val bytes = wadBytes
         val info = wadInfo
+        val replacement = selectedReplacement
         value = if (entry == null || bytes == null || info == null) {
             null
         } else {
             withContext(Dispatchers.Default) {
                 runCatching {
                     val palette = info.entries.firstOrNull { it.name.equals("PLAYPAL", ignoreCase = true) }
-                    val bitmap = DoomPatchPreview.decode(bytes, entry, palette)
+                    val bitmap = if (replacement != null) {
+                        BitmapFactory.decodeByteArray(replacement, 0, replacement.size)
+                            ?: error("No se pudo mostrar el PNG importado.")
+                    } else {
+                        DoomPatchPreview.decode(bytes, entry, palette)
+                    }
                     val offsets = readGraphicOffsets(bytes, entry)
                     PreviewResult(bitmap = bitmap, offsetX = offsets.first, offsetY = offsets.second)
                 }.fold(
@@ -380,9 +414,9 @@ private fun DeuTexScreen(nativeStatus: String) {
                     onClick = {
                         val source = wadBytes
                         val info = wadInfo
-                        if (source != null && info != null && editedOffsets.isNotEmpty()) {
+                        if (source != null && info != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty())) {
                             runCatching {
-                                pendingSaveBytes = applyOffsetEditsToWad(source, info.entries, editedOffsets.toMap())
+                                pendingSaveBytes = rebuildWad(source, info, replacementPngs.toMap(), editedOffsets.toMap())
                                 val baseName = fileName.substringBeforeLast('.', fileName)
                                 saveWadLauncher.launch("${baseName}_editado.wad")
                             }.onFailure {
@@ -390,10 +424,10 @@ private fun DeuTexScreen(nativeStatus: String) {
                             }
                         }
                     },
-                    enabled = wadBytes != null && editedOffsets.isNotEmpty(),
+                    enabled = wadBytes != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (editedOffsets.isEmpty()) "Guardar WAD (sin cambios)" else "Exportar WAD modificado")
+                    Text(if (editedOffsets.isEmpty() && replacementPngs.isEmpty()) "Guardar WAD (sin cambios)" else "Exportar WAD modificado")
                 }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -502,6 +536,7 @@ private fun DeuTexScreen(nativeStatus: String) {
                                 exportPngLauncher.launch("${entry.name}.png")
                             }
                         ) { Text("Exportar PNG") }
+                        TextButton(onClick = { importPngLauncher.launch(arrayOf("image/png")) }) { Text(if (replacementPngs.containsKey(key)) "Cambiar PNG" else "Reemplazar PNG") }
                         TextButton(onClick = { editorOpen = true }) { Text("Editar") }
                     }
                     TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
