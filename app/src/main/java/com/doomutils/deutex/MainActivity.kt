@@ -223,6 +223,28 @@ private fun DeuTexScreen(nativeStatus: String) {
         pendingSaveBytes = null
     }
 
+    var pendingExportBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val exportPngLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/png")
+    ) { uri: Uri? ->
+        val bitmapToExport = pendingExportBitmap
+        if (uri != null && bitmapToExport != null) {
+            runCatching {
+                val output = context.contentResolver.openOutputStream(uri, "w")
+                    ?: error("No se pudo crear el archivo PNG.")
+                output.use {
+                    check(bitmapToExport.compress(Bitmap.CompressFormat.PNG, 100, it)) {
+                        "No se pudo codificar la imagen PNG."
+                    }
+                }
+                message = "Imagen exportada como PNG."
+            }.onFailure {
+                message = it.message ?: "No se pudo exportar la imagen."
+            }
+        }
+        pendingExportBitmap = null
+    }
+
     val preview by produceState<PreviewResult?>(initialValue = null, selectedEntry, wadBytes, wadInfo) {
         val entry = selectedEntry
         val bytes = wadBytes
@@ -375,6 +397,12 @@ private fun DeuTexScreen(nativeStatus: String) {
             confirmButton = {
                 Row {
                     if (preview?.bitmap != null) {
+                        TextButton(
+                            onClick = {
+                                pendingExportBitmap = preview?.bitmap
+                                exportPngLauncher.launch("${entry.name}.png")
+                            }
+                        ) { Text("Exportar PNG") }
                         TextButton(onClick = { editorOpen = true }) { Text("Editar") }
                     }
                     TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
