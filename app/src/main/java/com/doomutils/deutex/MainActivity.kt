@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -38,11 +39,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.zip.CRC32
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import java.io.ByteArrayOutputStream
 
 private data class PreviewResult(
     val bitmap: Bitmap? = null,
@@ -275,6 +280,9 @@ private fun DeuTexScreen(nativeStatus: String) {
     var editorOpen by remember { mutableStateOf(false) }
     val editedOffsets = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
     val replacementPngs = remember { mutableStateMapOf<String, ByteArray>() }
+    val selectedGraphicKeys = remember { mutableStateMapOf<String, Boolean>() }
+    val scope = rememberCoroutineScope()
+    var pendingZipBytes by remember { mutableStateOf<ByteArray?>(null) }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -290,6 +298,7 @@ private fun DeuTexScreen(nativeStatus: String) {
                 editorOpen = false
                 editedOffsets.clear()
                 replacementPngs.clear()
+                selectedGraphicKeys.clear()
                 searchQuery = ""
                 fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -329,6 +338,21 @@ private fun DeuTexScreen(nativeStatus: String) {
         pendingSaveBytes = null
     }
 
+
+    val zipExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: Uri? ->
+        val zip = pendingZipBytes
+        if (uri != null && zip != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri, "w")?.use { it.write(zip) }
+                    ?: error("No se pudo crear el archivo ZIP.")
+                message = "Exportación por lotes completada."
+                selectedGraphicKeys.clear()
+            }.onFailure { message = it.message ?: "No se pudo guardar el ZIP." }
+        }
+        pendingZipBytes = null
+    }
 
     val importPngLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -454,8 +478,65 @@ private fun DeuTexScreen(nativeStatus: String) {
                             query.isEmpty() || entry.name.lowercase(Locale.ROOT).contains(query)
                         }
                     }
+                    val selectedCount = selectedGraphicKeys.values.count { it }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            enabled = selectedCount > 0 && wadBytes != null,
+                            onClick = {
+                                val source = wadBytes
+                                if (source != null) {
+                                    scope.launch {
+                                        runCatching {
+                                            val zipBytes = withContext(Dispatchers.Default) {
+                                                val output = ByteArrayOutputStream()
+                                                ZipOutputStream(output).use { zip ->
+                                                    val palette = info.entries.firstOrNull { it.name.equals("PLAYPAL", true) }
+                                                    info.entries.forEachIndexed { index, resource ->
+                                                        if (selectedGraphicKeys[entryKey(resource)] == true &&
+                                                            resource.offset >= 0L && resource.size >= 0L &&
+                                                            resource.offset + resource.size <= source.size.toLong()
+                                                        ) {
+                                                            val start = resource.offset.toInt()
+                                                            val end = (resource.offset + resource.size).toInt()
+                                                            val raw = source.copyOfRange(start, end)
+                                                            val bitmap = if (isPng(raw)) {
+                                                                BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                                                            } else {
+                                                                DoomPatchPreview.decode(source, resource, palette)
+                                                            }
+                                                            if (bitmap != null) {
+                                                                val png = ByteArrayOutputStream()
+                                                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, png)
+                                                                val safeName = resource.name.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+                                                                zip.putNextEntry(ZipEntry(String.format(Locale.ROOT, "%04d_%s.png", index + 1, safeName)))
+                                                                zip.write(png.toByteArray())
+                                                                zip.closeEntry()
+                                                                bitmap.recycle()
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                output.toByteArray()
+                                            }
+                                            require(zipBytes.isNotEmpty()) { "No se encontraron gráficos compatibles entre los recursos seleccionados." }
+                                            pendingZipBytes = zipBytes
+                                            zipExportLauncher.launch(fileName.substringBeforeLast('.', "graficos") + "_graficos.zip")
+                                        }.onFailure { message = it.message ?: "Falló la exportación por lotes." }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Exportar $selectedCount a ZIP") }
+                        TextButton(onClick = {
+                            if (selectedCount == filteredEntries.size) selectedGraphicKeys.clear()
+                            else filteredEntries.forEach { selectedGraphicKeys[entryKey(it.value)] = true }
+                        }) { Text("Seleccionar visibles") }
+                    }
                     Text(
-                        "Mostrando ${filteredEntries.size} de ${info.entries.size} recursos · Toca uno para ver si es un gráfico compatible",
+                        "Mostrando ${filteredEntries.size} de ${info.entries.size} recursos · Marca los gráficos para exportarlos juntos",
                         style = MaterialTheme.typography.labelMedium
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -471,19 +552,22 @@ private fun DeuTexScreen(nativeStatus: String) {
                         ) { indexed ->
                             val entry = indexed.value
                             Row(
-                                Modifier.fillMaxWidth()
-                                    .clickable {
+                                Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Checkbox(
+                                    checked = selectedGraphicKeys[entryKey(entry)] == true,
+                                    onCheckedChange = { checked -> selectedGraphicKeys[entryKey(entry)] = checked }
+                                )
+                                Column(
+                                    Modifier.weight(1f).clickable {
                                         editorOpen = false
                                         selectedEntry = entry
                                     }
-                                    .padding(vertical = 7.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "${indexed.index + 1}. ${entry.name}",
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 1
-                                )
+                                ) {
+                                    Text(text = "${indexed.index + 1}. ${entry.name}", maxLines = 1)
+                                }
                                 Text(formatByteSize(entry.size), style = MaterialTheme.typography.bodySmall)
                             }
                             Divider()
