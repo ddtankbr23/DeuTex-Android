@@ -250,8 +250,9 @@ private fun rebuildWad(
         cursor += payload.size
     }
     info.entries.forEachIndexed { index, entry ->
-        val name = entry.name.toByteArray(Charsets.US_ASCII)
-        require(name.size <= 8) { "El nombre \${entry.name} excede los 8 caracteres permitidos por WAD." }
+        val safeName = if (entry.name == "(sin nombre)") "" else entry.name
+        val name = safeName.toByteArray(Charsets.US_ASCII)
+        require(name.size <= 8) { "Nombre WAD demasiado largo: " + safeName }
         header.position(directoryOffset.toInt() + index * 16)
         header.putInt(offsets[index])
         header.putInt(payloads[index].size)
@@ -317,7 +318,9 @@ private fun DeuTexScreen(nativeStatus: String) {
                 context.contentResolver.openOutputStream(uri, "w")?.use { it.write(bytesToSave) }
                     ?: error("No se pudo crear el archivo de salida.")
                 wadBytes = bytesToSave
+                wadInfo = WadReader.parse(bytesToSave)
                 editedOffsets.clear()
+                replacementPngs.clear()
                 message = "${wadInfo?.type ?: "WAD"} · cambios guardados en la copia exportada"
             }.onFailure {
                 message = it.message ?: "No se pudo guardar el WAD."
