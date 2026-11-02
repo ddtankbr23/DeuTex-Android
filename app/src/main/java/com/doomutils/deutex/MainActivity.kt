@@ -490,8 +490,9 @@ private fun DeuTexScreen(nativeStatus: String) {
                                 if (source != null) {
                                     scope.launch {
                                         runCatching {
-                                            val zipBytes = withContext(Dispatchers.Default) {
+                                            val exportResult = withContext(Dispatchers.Default) {
                                                 val output = ByteArrayOutputStream()
+                                                var exportedCount = 0
                                                 ZipOutputStream(output).use { zip ->
                                                     val palette = info.entries.firstOrNull { it.name.equals("PLAYPAL", true) }
                                                     info.entries.forEachIndexed { index, resource ->
@@ -515,14 +516,15 @@ private fun DeuTexScreen(nativeStatus: String) {
                                                                 zip.write(png.toByteArray())
                                                                 zip.closeEntry()
                                                                 bitmap.recycle()
+                                                                exportedCount++
                                                             }
                                                         }
                                                     }
                                                 }
-                                                output.toByteArray()
+                                                output.toByteArray() to exportedCount
                                             }
-                                            require(zipBytes.isNotEmpty()) { "No se encontraron gráficos compatibles entre los recursos seleccionados." }
-                                            pendingZipBytes = zipBytes
+                                            require(exportResult.second > 0) { "No se encontraron gráficos compatibles entre los recursos seleccionados." }
+                                            pendingZipBytes = exportResult.first
                                             zipExportLauncher.launch(fileName.substringBeforeLast('.', "graficos") + "_graficos.zip")
                                         }.onFailure { message = it.message ?: "Falló la exportación por lotes." }
                                     }
