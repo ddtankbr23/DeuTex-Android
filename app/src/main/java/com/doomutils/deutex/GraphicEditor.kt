@@ -1,15 +1,18 @@
 package com.doomutils.deutex
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Color as AndroidColor
 import android.graphics.Paint
 import android.graphics.RectF
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
+import android.view.MotionEvent
+import android.view.View
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
@@ -23,20 +26,103 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+private class GraphicCanvasView(
+    context: Context,
+    private val bitmap: Bitmap,
+    private val onOffsetsChanged: (Int, Int) -> Unit
+) : View(context) {
+    var offsetX: Int = 0
+        set(value) { field = value; invalidate() }
+    var offsetY: Int = 0
+        set(value) { field = value; invalidate() }
+    var zoom: Float = 1f
+        set(value) { field = value; invalidate() }
+
+    private val checkerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.RED
+        strokeWidth = resources.displayMetrics.density * 1.5f
+        style = Paint.Style.STROKE
+    }
+    private val density = resources.displayMetrics.density
+    private var lastX = 0f
+    private var lastY = 0f
+
+    override fun onDraw(canvas: AndroidCanvas) {
+        super.onDraw(canvas)
+        val cell = 18f * density
+        checkerPaint.color = AndroidColor.rgb(185, 185, 185)
+        canvas.drawColor(checkerPaint.color)
+        checkerPaint.color = AndroidColor.rgb(225, 225, 225)
+        var y = 0f
+        while (y < height) {
+            var x = 0f
+            while (x < width) {
+                if (((x / cell).toInt() + (y / cell).toInt()) % 2 == 0) {
+                    canvas.drawRect(x, y, x + cell, y + cell, checkerPaint)
+                }
+                x += cell
+            }
+            y += cell
+        }
+
+        val fit = min(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
+            .coerceAtLeast(0.01f) * zoom
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val left = centerX - offsetX * fit
+        val top = centerY - offsetY * fit
+        val dst = RectF(left, top, left + bitmap.width * fit, top + bitmap.height * fit)
+        canvas.drawBitmap(bitmap, null, dst, imagePaint)
+
+        val arm = 14f * density
+        canvas.drawLine(centerX - arm, centerY, centerX + arm, centerY, crossPaint)
+        canvas.drawLine(centerX, centerY - arm, centerX, centerY + arm, crossPaint)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastX = event.x
+                lastY = event.y
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val fit = min(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
+                    .coerceAtLeast(0.01f) * zoom
+                val dx = event.x - lastX
+                val dy = event.y - lastY
+                offsetX -= (dx / fit).roundToInt()
+                offsetY -= (dy / fit).roundToInt()
+                lastX = event.x
+                lastY = event.y
+                onOffsetsChanged(offsetX, offsetY)
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                performClick()
+                return true
+            }
+        }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+}
 
 @Composable
 fun GraphicEditorDialog(
@@ -52,16 +138,11 @@ fun GraphicEditorDialog(
     val offsetY = remember(bitmap, initialOffsetX, initialOffsetY) {
         mutableIntStateOf(initialOffsetY)
     }
-    val offsetXText = remember(offsetX.intValue) {
-        mutableStateOf(offsetX.intValue.toString())
-    }
-    val offsetYText = remember(offsetY.intValue) {
-        mutableStateOf(offsetY.intValue.toString())
-    }
+    val offsetXText = remember { mutableStateOf(initialOffsetX.toString()) }
+    val offsetYText = remember { mutableStateOf(initialOffsetY.toString()) }
     val zoom = remember { mutableFloatStateOf(1f) }
-    val image = remember(bitmap) { bitmap.asImageBitmap() }
-    val bitmapPaint = remember {
-        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    val canvasView = remember(bitmap) {
+        mutableStateOf<GraphicCanvasView?>(null)
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -79,66 +160,34 @@ fun GraphicEditorDialog(
                     "Arrastra la imagen para ajustar su punto de origen. La cruz marca el origen.",
                     style = MaterialTheme.typography.bodySmall
                 )
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 260.dp, max = 390.dp)
-                        .pointerInput(bitmap, zoom.floatValue) {
-                            detectDragGestures { change, dragAmount ->
-                                change.consume()
-                                val fit = min(
-                                    size.width.toFloat() / bitmap.width,
-                                    size.height.toFloat() / bitmap.height
-                                ).coerceAtLeast(0.01f) * zoom.floatValue
-                                offsetX.intValue -= (dragAmount.x / fit).roundToInt()
-                                offsetY.intValue -= (dragAmount.y / fit).roundToInt()
-                            }
+                AndroidView(
+                    factory = { context ->
+                        GraphicCanvasView(context, bitmap) { x, y ->
+                            offsetX.intValue = x
+                            offsetY.intValue = y
+                            offsetXText.value = x.toString()
+                            offsetYText.value = y.toString()
+                        }.also {
+                            it.offsetX = offsetX.intValue
+                            it.offsetY = offsetY.intValue
+                            it.zoom = zoom.floatValue
+                            canvasView.value = it
                         }
-                ) {
-                    val cell = 18.dp.toPx()
-                    drawRect(Color(0xFFB8B8B8))
-                    var y = 0f
-                    while (y < size.height) {
-                        var x = 0f
-                        while (x < size.width) {
-                            if (((x / cell).toInt() + (y / cell).toInt()) % 2 == 0) {
-                                drawRect(
-                                    color = Color(0xFFE5E5E5),
-                                    topLeft = Offset(x, y),
-                                    size = Size(cell, cell)
-                                )
-                            }
-                            x += cell
-                        }
-                        y += cell
-                    }
-
-                    val fit = min(
-                        size.width / bitmap.width.toFloat(),
-                        size.height / bitmap.height.toFloat()
-                    ).coerceAtLeast(0.01f) * zoom.floatValue
-                    val imageWidth = (bitmap.width * fit).roundToInt().coerceAtLeast(1)
-                    val imageHeight = (bitmap.height * fit).roundToInt().coerceAtLeast(1)
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val left = center.x - offsetX.intValue * fit
-                    val top = center.y - offsetY.intValue * fit
-
-                    // Draw through Android's native canvas for consistent Bitmap rendering.
-                    drawContext.canvas.nativeCanvas.drawBitmap(
-                        bitmap,
-                        null,
-                        RectF(left, top, left + imageWidth, top + imageHeight),
-                        bitmapPaint
-                    )
-
-                    val arm = 14.dp.toPx()
-                    drawLine(Color.Red, Offset(center.x - arm, center.y), Offset(center.x + arm, center.y), 1.5.dp.toPx())
-                    drawLine(Color.Red, Offset(center.x, center.y - arm), Offset(center.x, center.y + arm), 1.5.dp.toPx())
-                }
+                    },
+                    update = { view ->
+                        view.offsetX = offsetX.intValue
+                        view.offsetY = offsetY.intValue
+                        view.zoom = zoom.floatValue
+                    },
+                    modifier = Modifier.fillMaxWidth().height(320.dp)
+                )
                 Text("Zoom: ${(zoom.floatValue * 100).roundToInt()}%")
                 Slider(
                     value = zoom.floatValue,
-                    onValueChange = { zoom.floatValue = it },
+                    onValueChange = {
+                        zoom.floatValue = it
+                        canvasView.value?.zoom = it
+                    },
                     valueRange = 0.25f..4f
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -146,7 +195,10 @@ fun GraphicEditorDialog(
                         value = offsetXText.value,
                         onValueChange = { value ->
                             offsetXText.value = value
-                            value.toIntOrNull()?.let { offsetX.intValue = it }
+                            value.toIntOrNull()?.let {
+                                offsetX.intValue = it
+                                canvasView.value?.offsetX = it
+                            }
                         },
                         modifier = Modifier.weight(1f),
                         label = { Text("Offset X") },
@@ -156,7 +208,10 @@ fun GraphicEditorDialog(
                         value = offsetYText.value,
                         onValueChange = { value ->
                             offsetYText.value = value
-                            value.toIntOrNull()?.let { offsetY.intValue = it }
+                            value.toIntOrNull()?.let {
+                                offsetY.intValue = it
+                                canvasView.value?.offsetY = it
+                            }
                         },
                         modifier = Modifier.weight(1f),
                         label = { Text("Offset Y") },
@@ -166,8 +221,7 @@ fun GraphicEditorDialog(
                 Divider()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End
                 ) {
                     Button(onClick = onDismiss) { Text("Cancelar") }
                     Button(
