@@ -1,6 +1,7 @@
 package com.doomutils.deutex
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -161,6 +162,104 @@ private fun applyOffsetEditsToWad(
 }
 
 private fun entryKey(entry: WadEntry): String = "${entry.offset}:${entry.name}"
+
+private fun isPng(bytes: ByteArray): Boolean =
+    bytes.size >= 8 && bytes[0] == 0x89.toByte() &&
+        bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()
+
+private fun pngWithGrabOffsets(png: ByteArray, x: Int, y: Int): ByteArray {
+    require(isPng(png)) { "El archivo seleccionado no es un PNG válido." }
+    val signature = png.copyOfRange(0, 8)
+    val chunks = ArrayList<ByteArray>()
+    var position = 8
+    var foundGrab = false
+    var foundIend = false
+    while (position + 12 <= png.size) {
+        val length = ByteBuffer.wrap(png, position, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
+        val end = position.toLong() + 12L + length
+        require(length <= Int.MAX_VALUE && end <= png.size.toLong()) { "El PNG está dañado o incompleto." }
+        val type = String(png, position + 4, 4, Charsets.US_ASCII)
+        if (type == "grAb") {
+            require(length >= 8L) { "El bloque grAb del PNG está incompleto." }
+            val data = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putInt(x).putInt(y).array()
+            chunks += pngChunk("grAb", data)
+            foundGrab = true
+        } else {
+            if (!foundGrab && type == "IDAT") {
+                val data = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putInt(x).putInt(y).array()
+                chunks += pngChunk("grAb", data)
+                foundGrab = true
+            }
+            chunks += png.copyOfRange(position, end.toInt())
+        }
+        position = end.toInt()
+        if (type == "IEND") { foundIend = true; break }
+    }
+    require(foundGrab && foundIend) { "El PNG no contiene una estructura completa donde insertar los offsets." }
+    val out = ByteArray(8 + chunks.sumOf { it.size })
+    signature.copyInto(out)
+    var cursor = 8
+    chunks.forEach { it.copyInto(out, cursor); cursor += it.size }
+    return out
+}
+
+private fun pngChunk(type: String, data: ByteArray): ByteArray {
+    val typeBytes = type.toByteArray(Charsets.US_ASCII)
+    val chunk = ByteArray(12 + data.size)
+    ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).putInt(data.size).put(typeBytes).put(data)
+    val crc = CRC32()
+    crc.update(typeBytes)
+    crc.update(data)
+    ByteBuffer.wrap(chunk, 8 + data.size, 4).order(ByteOrder.BIG_ENDIAN).putInt(crc.value.toInt())
+    return chunk
+}
+
+private fun rebuildWad(
+    source: ByteArray,
+    info: WadInfo,
+    replacements: Map<String, ByteArray>,
+    offsetEdits: Map<String, Pair<Int, Int>>
+): ByteArray {
+    val patchedSource = applyOffsetEditsToWad(source, info.entries, offsetEdits.filterKeys { key ->
+        info.entries.any { entryKey(it) == key && replacements[key] == null }
+    })
+    val payloads = info.entries.map { entry ->
+        val key = entryKey(entry)
+        val replacement = replacements[key]
+        if (replacement != null) {
+            val offsets = offsetEdits[key] ?: readGraphicOffsets(source, entry)
+            pngWithGrabOffsets(replacement, offsets.first, offsets.second)
+        } else {
+            patchedSource.copyOfRange(entry.offset.toInt(), (entry.offset + entry.size).toInt())
+        }
+    }
+    val directoryOffset = 12L + payloads.sumOf { it.size.toLong() }
+    val totalSize = directoryOffset + info.entries.size.toLong() * 16L
+    require(totalSize <= Int.MAX_VALUE.toLong()) { "El WAD resultante es demasiado grande para esta versión." }
+    val out = ByteArray(totalSize.toInt())
+    val header = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+    header.put(info.type.toByteArray(Charsets.US_ASCII))
+    header.putInt(info.entries.size)
+    header.putInt(directoryOffset.toInt())
+    var cursor = 12
+    val offsets = IntArray(payloads.size)
+    payloads.forEachIndexed { index, payload ->
+        offsets[index] = cursor
+        payload.copyInto(out, cursor)
+        cursor += payload.size
+    }
+    info.entries.forEachIndexed { index, entry ->
+        val name = entry.name.toByteArray(Charsets.US_ASCII)
+        require(name.size <= 8) { "El nombre \${entry.name} excede los 8 caracteres permitidos por WAD." }
+        header.position(directoryOffset.toInt() + index * 16)
+        header.putInt(offsets[index])
+        header.putInt(payloads[index].size)
+        val nameField = ByteArray(8)
+        name.copyInto(nameField)
+        header.put(nameField)
+    }
+    return out
+}
 
 @Composable
 private fun DeuTexScreen(nativeStatus: String) {
