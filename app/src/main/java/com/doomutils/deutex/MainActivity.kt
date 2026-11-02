@@ -287,6 +287,10 @@ private fun DeuTexScreen(nativeStatus: String) {
     val editedOffsets = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
     val replacementPngs = remember { mutableStateMapOf<String, ByteArray>() }
     val selectedGraphicKeys = remember { mutableStateMapOf<String, Boolean>() }
+    val deletedEntryKeys = remember { mutableStateMapOf<String, Boolean>() }
+    val renamedEntries = remember { mutableStateMapOf<String, String>() }
+    var renameTarget by remember { mutableStateOf<WadEntry?>(null) }
+    var renameText by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var pendingZipBytes by remember { mutableStateOf<ByteArray?>(null) }
 
@@ -305,6 +309,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 editedOffsets.clear()
                 replacementPngs.clear()
                 selectedGraphicKeys.clear()
+                deletedEntryKeys.clear()
+                renamedEntries.clear()
                 searchQuery = ""
                 fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -336,6 +342,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 wadInfo = WadReader.parse(bytesToSave)
                 editedOffsets.clear()
                 replacementPngs.clear()
+                deletedEntryKeys.clear()
+                renamedEntries.clear()
                 message = "${wadInfo?.type ?: "WAD"} · cambios guardados en la copia exportada"
             }.onFailure {
                 message = it.message ?: "No se pudo guardar el WAD."
@@ -514,9 +522,9 @@ private fun DeuTexScreen(nativeStatus: String) {
                     onClick = {
                         val source = wadBytes
                         val info = wadInfo
-                        if (source != null && info != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty())) {
+                        if (source != null && info != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty() || deletedEntryKeys.values.any { it } || renamedEntries.isNotEmpty())) {
                             runCatching {
-                                pendingSaveBytes = rebuildWad(source, info, replacementPngs.toMap(), editedOffsets.toMap())
+                                pendingSaveBytes = rebuildWad(source, info, replacementPngs.toMap(), editedOffsets.toMap(), deletedEntryKeys.filterValues { it }.keys, renamedEntries.toMap())
                                 val baseName = fileName.substringBeforeLast('.', fileName)
                                 saveWadLauncher.launch("${baseName}_editado.wad")
                             }.onFailure {
@@ -524,10 +532,10 @@ private fun DeuTexScreen(nativeStatus: String) {
                             }
                         }
                     },
-                    enabled = wadBytes != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty()),
+                    enabled = wadBytes != null && (editedOffsets.isNotEmpty() || replacementPngs.isNotEmpty() || deletedEntryKeys.values.any { it } || renamedEntries.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (editedOffsets.isEmpty() && replacementPngs.isEmpty()) "Guardar WAD (sin cambios)" else "Exportar WAD modificado")
+                    Text(if (editedOffsets.isEmpty() && replacementPngs.isEmpty() && deletedEntryKeys.values.none { it } && renamedEntries.isEmpty()) "Guardar WAD (sin cambios)" else "Exportar WAD modificado")
                 }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -708,6 +716,20 @@ private fun DeuTexScreen(nativeStatus: String) {
                             }
                         }
                         Row {
+                            TextButton(onClick = {
+                                renameText = renamedEntries[key] ?: entry.name
+                                renameTarget = entry
+                            }) { Text("Renombrar") }
+                            TextButton(onClick = {
+                                deletedEntryKeys[key] = true
+                                replacementPngs.remove(key)
+                                editedOffsets.remove(key)
+                                selectedGraphicKeys.remove(key)
+                                selectedEntry = null
+                                message = "Recurso ${entry.name} marcado para eliminar. Exporta el WAD para aplicar el cambio."
+                            }) { Text("Eliminar") }
+                        }
+                        Row {
                             TextButton(onClick = { editorOpen = true }) { Text("Editar") }
                             TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
                         }
@@ -715,6 +737,41 @@ private fun DeuTexScreen(nativeStatus: String) {
                         TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
                     }
                 }
+            }
+        )
+    }
+
+    if (renameTarget != null) {
+        val target = renameTarget!!
+        val targetKey = entryKey(target)
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Renombrar recurso") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Nombre actual: ${target.name}")
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { value ->
+                            renameText = value.uppercase(Locale.ROOT).filter { it.code in 33..126 }.take(8)
+                        },
+                        label = { Text("Nuevo nombre (1–8 caracteres)") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = renameText.isNotBlank() && renameText.length <= 8,
+                    onClick = {
+                        renamedEntries[targetKey] = renameText
+                        message = "Recurso ${target.name} se exportará como ${renameText}."
+                        renameTarget = null
+                    }
+                ) { Text("Aplicar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("Cancelar") }
             }
         )
     }
