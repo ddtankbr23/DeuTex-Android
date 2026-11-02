@@ -40,6 +40,7 @@ import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.zip.CRC32
 
 private data class PreviewResult(
     val bitmap: Bitmap? = null,
@@ -95,6 +96,70 @@ private fun readGraphicOffsets(bytes: ByteArray, entry: WadEntry): Pair<Int, Int
     return header.short.toInt() to header.short.toInt()
 }
 
+private fun applyOffsetEditsToWad(
+    source: ByteArray,
+    entries: List<WadEntry>,
+    edits: Map<String, Pair<Int, Int>>
+): ByteArray {
+    val output = source.copyOf()
+    for (entry in entries) {
+        val offsets = edits[entryKey(entry)] ?: continue
+        val (x, y) = offsets
+        require(entry.offset >= 0L && entry.size >= 8L &&
+            entry.offset + entry.size <= output.size.toLong()
+        ) { "El recurso ${entry.name} está fuera de los límites del WAD." }
+        val start = entry.offset.toInt()
+        val isPng = output[start] == 0x89.toByte() &&
+            output[start + 1] == 0x50.toByte() &&
+            output[start + 2] == 0x4E.toByte() &&
+            output[start + 3] == 0x47.toByte()
+
+        if (isPng) {
+            val end = (entry.offset + entry.size).toInt()
+            var position = start + 8
+            var updated = false
+            while (position + 12 <= end) {
+                val length = ByteBuffer.wrap(output, position, 4)
+                    .order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
+                val dataStart = position + 8
+                val chunkEnd = dataStart.toLong() + length + 4L
+                if (chunkEnd > end.toLong() || length > Int.MAX_VALUE) break
+                val isGrab = output[position + 4] == 'g'.code.toByte() &&
+                    output[position + 5] == 'r'.code.toByte() &&
+                    output[position + 6] == 'A'.code.toByte() &&
+                    output[position + 7] == 'b'.code.toByte()
+                if (isGrab) {
+                    require(length >= 8L) { "El bloque grAb de ${entry.name} está incompleto." }
+                    ByteBuffer.wrap(output, dataStart, 8)
+                        .order(ByteOrder.BIG_ENDIAN)
+                        .putInt(x)
+                        .putInt(y)
+                    val crc = CRC32()
+                    crc.update(output, position + 4, 4 + length.toInt())
+                    ByteBuffer.wrap(output, (dataStart + length.toInt()), 4)
+                        .order(ByteOrder.BIG_ENDIAN)
+                        .putInt(crc.value.toInt())
+                    updated = true
+                    break
+                }
+                position = chunkEnd.toInt()
+            }
+            require(updated) {
+                "El PNG ${entry.name} no contiene un bloque grAb. No se modificó para evitar alterar su estructura."
+            }
+        } else {
+            require(x in Short.MIN_VALUE..Short.MAX_VALUE && y in Short.MIN_VALUE..Short.MAX_VALUE) {
+                "Los offsets de un gráfico Doom clásico deben estar entre -32768 y 32767."
+            }
+            output[start + 4] = (x and 0xff).toByte()
+            output[start + 5] = ((x shr 8) and 0xff).toByte()
+            output[start + 6] = (y and 0xff).toByte()
+            output[start + 7] = ((y shr 8) and 0xff).toByte()
+        }
+    }
+    return output
+}
+
 private fun entryKey(entry: WadEntry): String = "${entry.offset}:${entry.name}"
 
 @Composable
@@ -139,6 +204,25 @@ private fun DeuTexScreen(nativeStatus: String) {
         }
     }
 
+    var pendingSaveBytes by remember { mutableStateOf<ByteArray?>(null) }
+    val saveWadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri: Uri? ->
+        val bytesToSave = pendingSaveBytes
+        if (uri != null && bytesToSave != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri, "w")?.use { it.write(bytesToSave) }
+                    ?: error("No se pudo crear el archivo de salida.")
+                wadBytes = bytesToSave
+                editedOffsets.clear()
+                message = "${wadInfo?.type ?: "WAD"} · cambios guardados en la copia exportada"
+            }.onFailure {
+                message = it.message ?: "No se pudo guardar el WAD."
+            }
+        }
+        pendingSaveBytes = null
+    }
+
     val preview by produceState<PreviewResult?>(initialValue = null, selectedEntry, wadBytes, wadInfo) {
         val entry = selectedEntry
         val bytes = wadBytes
@@ -170,6 +254,25 @@ private fun DeuTexScreen(nativeStatus: String) {
                 Text("Explorador de archivos WAD · ARM64", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Abrir archivo WAD")
+                }
+                Button(
+                    onClick = {
+                        val source = wadBytes
+                        val info = wadInfo
+                        if (source != null && info != null && editedOffsets.isNotEmpty()) {
+                            runCatching {
+                                pendingSaveBytes = applyOffsetEditsToWad(source, info.entries, editedOffsets.toMap())
+                                val baseName = fileName.substringBeforeLast('.', fileName)
+                                saveWadLauncher.launch("${baseName}_editado.wad")
+                            }.onFailure {
+                                message = it.message ?: "No se pudieron preparar los cambios."
+                            }
+                        }
+                    },
+                    enabled = wadBytes != null && editedOffsets.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (editedOffsets.isEmpty()) "Guardar WAD (sin cambios)" else "Exportar WAD modificado")
                 }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
