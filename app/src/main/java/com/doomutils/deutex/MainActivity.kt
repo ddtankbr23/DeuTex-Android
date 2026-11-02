@@ -46,6 +46,7 @@ import java.nio.ByteOrder
 import java.util.Locale
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import java.io.ByteArrayOutputStream
 
@@ -354,6 +355,66 @@ private fun DeuTexScreen(nativeStatus: String) {
         pendingZipBytes = null
     }
 
+
+    val importPngZipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val info = wadInfo
+        if (uri != null && info != null) {
+            runCatching {
+                val imported = linkedMapOf<String, ByteArray>()
+                var totalBytes = 0L
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    ZipInputStream(input).use { zip ->
+                        while (true) {
+                            val item = zip.nextEntry ?: break
+                            if (!item.isDirectory && item.name.lowercase(Locale.ROOT).endsWith(".png")) {
+                                val image = ByteArrayOutputStream()
+                                val buffer = ByteArray(8192)
+                                while (true) {
+                                    val count = zip.read(buffer)
+                                    if (count < 0) break
+                                    totalBytes += count
+                                    require(totalBytes <= 128L * 1024L * 1024L) {
+                                        "El ZIP supera el límite de seguridad de 128 MB."
+                                    }
+                                    require(image.size().toLong() + count <= 32L * 1024L * 1024L) {
+                                        "Una imagen del ZIP supera el límite de 32 MB."
+                                    }
+                                    image.write(buffer, 0, count)
+                                }
+                                val fileBase = item.name.substringAfterLast('/').substringBeforeLast('.')
+                                val resourceName = fileBase.replace(Regex("^\\d+_"), "").uppercase(Locale.ROOT)
+                                if (resourceName.isNotBlank()) imported[resourceName] = image.toByteArray()
+                            }
+                            zip.closeEntry()
+                        }
+                    }
+                } ?: error("No se pudo leer el archivo ZIP.")
+                var matched = 0
+                imported.forEach { (resourceName, png) ->
+                    require(isPng(png)) { "El archivo $resourceName no es un PNG válido." }
+                    val bitmap = BitmapFactory.decodeByteArray(png, 0, png.size)
+                        ?: error("No se pudo decodificar $resourceName.")
+                    require(bitmap.width <= 8192 && bitmap.height <= 8192) {
+                        "La imagen $resourceName supera 8192 × 8192 píxeles."
+                    }
+                    bitmap.recycle()
+                    info.entries.filter { it.name.equals(resourceName, ignoreCase = true) }.forEach { entry ->
+                        replacementPngs[entryKey(entry)] = png
+                        matched++
+                    }
+                }
+                require(matched > 0) {
+                    "No hubo coincidencias. Los PNG deben llamarse como el recurso WAD (por ejemplo PUNGA0.png o 1029_PUNGA0.png)."
+                }
+                message = "$matched recursos preparados desde el ZIP. Exporta el WAD para guardar los reemplazos."
+            }.onFailure {
+                message = it.message ?: "No se pudieron importar los PNG del ZIP."
+            }
+        }
+    }
+
     val importPngLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -436,6 +497,13 @@ private fun DeuTexScreen(nativeStatus: String) {
                 Text("Explorador de archivos WAD · ARM64", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Abrir archivo WAD")
+                }
+                Button(
+                    onClick = { importPngZipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) },
+                    enabled = wadInfo != null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reemplazar varios gráficos desde ZIP")
                 }
                 Button(
                     onClick = {
