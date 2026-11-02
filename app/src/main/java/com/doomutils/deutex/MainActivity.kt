@@ -734,7 +734,23 @@ private fun DeuTexScreen(nativeStatus: String) {
                             TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
                         }
                     } else {
-                        TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Row {
+                                TextButton(onClick = {
+                                    renameText = renamedEntries[key] ?: entry.name
+                                    renameTarget = entry
+                                }) { Text("Renombrar") }
+                                TextButton(onClick = {
+                                    deletedEntryKeys[key] = true
+                                    replacementPngs.remove(key)
+                                    editedOffsets.remove(key)
+                                    selectedGraphicKeys.remove(key)
+                                    selectedEntry = null
+                                    message = "Recurso ${entry.name} marcado para eliminar. Exporta el WAD para aplicar el cambio."
+                                }) { Text("Eliminar") }
+                            }
+                            TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
+                        }
                     }
                 }
             }
