@@ -530,18 +530,30 @@ private fun DeuTexScreen(nativeStatus: String) {
                 }
             },
             confirmButton = {
-                Row {
+                Column(horizontalAlignment = Alignment.End) {
                     if (preview?.bitmap != null) {
-                        TextButton(
-                            onClick = {
-                                pendingExportBitmap = preview?.bitmap
-                                exportPngLauncher.launch("${entry.name}.png")
+                        Row {
+                            TextButton(
+                                onClick = {
+                                    pendingExportBitmap = preview?.bitmap
+                                    exportPngLauncher.launch("${entry.name}.png")
+                                }
+                            ) { Text("Exportar PNG") }
+                        }
+                        Row {
+                            TextButton(
+                                onClick = { importPngLauncher.launch(arrayOf("image/png")) }
+                            ) {
+                                Text(if (replacementPngs.containsKey(key)) "Cambiar PNG" else "Reemplazar PNG")
                             }
-                        ) { Text("Exportar PNG") }
-                        TextButton(onClick = { importPngLauncher.launch(arrayOf("image/png")) }) { Text(if (replacementPngs.containsKey(key)) "Cambiar PNG" else "Reemplazar PNG") }
-                        TextButton(onClick = { editorOpen = true }) { Text("Editar") }
+                        }
+                        Row {
+                            TextButton(onClick = { editorOpen = true }) { Text("Editar") }
+                            TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
+                        }
+                    } else {
+                        TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
                     }
-                    TextButton(onClick = { selectedEntry = null }) { Text("Cerrar") }
                 }
             }
         )
