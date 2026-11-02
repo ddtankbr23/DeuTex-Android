@@ -225,28 +225,33 @@ private fun rebuildWad(
     source: ByteArray,
     info: WadInfo,
     replacements: Map<String, ByteArray>,
-    offsetEdits: Map<String, Pair<Int, Int>>
+    offsetEdits: Map<String, Pair<Int, Int>>,
+    deletedKeys: Set<String> = emptySet(),
+    renamedEntries: Map<String, String> = emptyMap()
 ): ByteArray {
+    val remainingEntries = info.entries.filter { entryKey(it) !in deletedKeys }
+    require(remainingEntries.isNotEmpty()) { "No se puede exportar un WAD sin recursos." }
     val patchedSource = applyOffsetEditsToWad(source, info.entries, offsetEdits.filterKeys { key ->
-        info.entries.any { entryKey(it) == key && replacements[key] == null }
+        info.entries.any { entryKey(it) == key && replacements[key] == null && key !in deletedKeys }
     })
-    val payloads = info.entries.map { entry ->
+    val payloads = remainingEntries.map { entry ->
         val key = entryKey(entry)
         val replacement = replacements[key]
         if (replacement != null) {
             val offsets = offsetEdits[key] ?: readGraphicOffsets(source, entry)
             pngWithGrabOffsets(replacement, offsets.first, offsets.second)
         } else {
+            require(entry.offset >= 0L && entry.size >= 0L && entry.offset + entry.size <= patchedSource.size.toLong()) { "El recurso \${entry.name} está fuera de los límites del WAD." }
             patchedSource.copyOfRange(entry.offset.toInt(), (entry.offset + entry.size).toInt())
         }
     }
     val directoryOffset = 12L + payloads.sumOf { it.size.toLong() }
-    val totalSize = directoryOffset + info.entries.size.toLong() * 16L
+    val totalSize = directoryOffset + remainingEntries.size.toLong() * 16L
     require(totalSize <= Int.MAX_VALUE.toLong()) { "El WAD resultante es demasiado grande para esta versión." }
     val out = ByteArray(totalSize.toInt())
     val header = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
     header.put(info.type.toByteArray(Charsets.US_ASCII))
-    header.putInt(info.entries.size)
+    header.putInt(remainingEntries.size)
     header.putInt(directoryOffset.toInt())
     var cursor = 12
     val offsets = IntArray(payloads.size)
@@ -255,10 +260,10 @@ private fun rebuildWad(
         payload.copyInto(out, cursor)
         cursor += payload.size
     }
-    info.entries.forEachIndexed { index, entry ->
-        val safeName = if (entry.name == "(sin nombre)") "" else entry.name
+    remainingEntries.forEachIndexed { index, entry ->
+        val safeName = renamedEntries[entryKey(entry)] ?: entry.name
         val name = safeName.toByteArray(Charsets.US_ASCII)
-        require(name.size <= 8) { "Nombre WAD demasiado largo: " + safeName }
+        require(name.isNotEmpty() && name.size <= 8 && name.all { it.toInt() in 33..126 }) { "Nombre WAD no válido: $safeName. Usa entre 1 y 8 caracteres ASCII imprimibles." }
         header.position(directoryOffset.toInt() + index * 16)
         header.putInt(offsets[index])
         header.putInt(payloads[index].size)
