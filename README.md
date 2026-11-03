@@ -1,40 +1,54 @@
-# DeuTex Android
+# DeuTex-Android
 
-Aplicación Android ARM64 para explorar y gestionar recursos WAD de Doom, Doom II, Heretic, Hexen y Strife.
+Editor Android ARM64 para explorar y modificar recursos WAD de Doom y derivados. El proyecto evoluciona hacia un taller modular multi-formato, inspirado en las capacidades de SLADE 3, con interfaz Android nativa.
 
-## Estado actual: prototipo 0.1.0
+## Funciones implementadas
 
-- Interfaz Android nativa con Jetpack Compose.
-- Selector de archivos del dispositivo.
-- Lector inicial de cabeceras y directorios IWAD/PWAD.
-- Listado de entradas WAD con nombre y tamaño.
-- Puente JNI/C++ compilado únicamente para `arm64-v8a`.
-- Flujo GitHub Actions para generar un APK de depuración.
+- Abrir y explorar archivos IWAD/PWAD.
+- Buscar recursos y mostrar tamaños.
+- Vista previa de PNG y gráficos Doom (patches).
+- Leer y editar offsets gráficos, incluidos offsets PNG grAb.
+- Exportar gráficos PNG individuales y por lotes ZIP.
+- Reemplazar gráficos desde PNG y lotes ZIP.
+- Renombrar y eliminar entradas, también en selección múltiple.
+- Reconstruir y exportar WAD conservando recursos no modificados.
+- Editor táctil de offsets con zoom.
+- Compilación automatizada del APK de depuración para arm64-v8a.
 
-**Importante:** esta primera compilación es una base funcional para abrir y explorar el índice de un WAD. Todavía no incluye el motor DeuTex original, ni extracción, importación, creación PWAD, previsualización de gráficos o reproducción de audio. Esas funciones se incorporarán y probarán por etapas; no se deben considerar disponibles todavía.
+## Arquitectura futura
+
+La aplicación se está preparando para separar archivos, recursos, editores y herramientas de motor:
+
+- WAD: mantener y estabilizar el editor existente.
+- ZIP/PK3: explorador y editor de paquetes.
+- Gráficos y multimedia: PNG/JPEG y audio/música.
+- Scripting: editor de ZScript, ACS, DECORATE, MAPINFO y otros lenguajes.
+- Mapas: módulo futuro para Doom, Hexen y UDMF.
+
+SLADE 3 sirve como referencia de funciones y compatibilidad. No se copiarán componentes automáticamente: cada dependencia se evaluará por rendimiento en Android, mantenimiento y licencia.
+
+## Estado y limitaciones
+
+El puente JNI/C++ existe, pero el motor original DeuTex todavía no está integrado. La detección ZIP/PK3 y la clasificación de lenguajes constituyen infraestructura inicial, no equivalen todavía a un editor PK3 o ZScript terminado. La edición/validación ZScript y ACS, compiladores, audio avanzado y editor de mapas siguen pendientes.
 
 ## Compilar el APK
 
-1. Abre la pestaña **Actions**.
-2. Selecciona **Build Android APK**.
-3. Pulsa **Run workflow** y confirma la rama `main`.
-4. Cuando termine correctamente, abre la ejecución y descarga el artefacto **DeuTex-Android-debug**.
+1. Abre la pestaña Actions del repositorio.
+2. Selecciona Build Android APK.
+3. Abre la ejecución más reciente que haya terminado correctamente.
+4. Descarga el artefacto DeuTex-Android-debug.
 
-También se ejecuta al hacer push a `main`.
+El workflow también se ejecuta automáticamente al hacer push a main.
 
 ## Tecnología
 
-- Kotlin + Jetpack Compose para la interfaz.
-- C++/JNI y Android NDK para la futura integración del motor.
-- ABI objetivo: `arm64-v8a`.
-- Android mínimo: API 23.
+- Kotlin + Jetpack Compose.
+- Android mínimo API 23.
+- Java 17, Gradle 8.9, Android NDK.
+- ABI inicial: arm64-v8a.
 
-## Proyecto original
+## Proyecto original y licencias
 
 DeuTex: https://github.com/Doom-Utils/deutex
 
-El proyecto original es un programa de línea de comandos escrito en C. Su código y sus licencias deben conservarse al integrarlo. DeuTex puede trabajar con WAD de Doom, Freedoom, Heretic, Hexen y Strife, y admite operaciones de extracción e inserción de recursos.
-
-## Licencias
-
-La aplicación de integración se distribuye separadamente del código original. Al incorporar DeuTex, se incluirán los avisos de copyright y los textos de licencia exigidos por cada componente (incluidas las licencias GPL/LGPL indicadas en el repositorio original).
+Antes de integrar DeuTex, ACC u otros componentes se revisarán sus licencias y dependencias, y se conservarán los avisos requeridos. No se incorporará código de SLADE ni de otros proyectos sin esa revisión.
