@@ -289,6 +289,7 @@ private fun DeuTexScreen(nativeStatus: String) {
     val selectedGraphicKeys = remember { mutableStateMapOf<String, Boolean>() }
     val deletedEntryKeys = remember { mutableStateMapOf<String, Boolean>() }
     val deleteSelectionKeys = remember { mutableStateMapOf<String, Boolean>() }
+    val deleteSelectedCount = deleteSelectionKeys.values.count { it }
     var bulkDeleteMode by remember { mutableStateOf(false) }
     var showBulkDeleteConfirm by remember { mutableStateOf(false) }
     val renamedEntries = remember { mutableStateMapOf<String, String>() }
@@ -567,7 +568,6 @@ private fun DeuTexScreen(nativeStatus: String) {
                         }
                     }
                     val selectedCount = selectedGraphicKeys.values.count { it }
-                    val deleteSelectedCount = deleteSelectionKeys.values.count { it }
                     if (bulkDeleteMode) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
