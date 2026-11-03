@@ -288,6 +288,9 @@ private fun DeuTexScreen(nativeStatus: String) {
     val replacementPngs = remember { mutableStateMapOf<String, ByteArray>() }
     val selectedGraphicKeys = remember { mutableStateMapOf<String, Boolean>() }
     val deletedEntryKeys = remember { mutableStateMapOf<String, Boolean>() }
+    val deleteSelectionKeys = remember { mutableStateMapOf<String, Boolean>() }
+    var bulkDeleteMode by remember { mutableStateOf(false) }
+    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
     val renamedEntries = remember { mutableStateMapOf<String, String>() }
     var renameTarget by remember { mutableStateOf<WadEntry?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -310,6 +313,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 replacementPngs.clear()
                 selectedGraphicKeys.clear()
                 deletedEntryKeys.clear()
+                deleteSelectionKeys.clear()
+                bulkDeleteMode = false
                 renamedEntries.clear()
                 searchQuery = ""
                 fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -343,6 +348,8 @@ private fun DeuTexScreen(nativeStatus: String) {
                 editedOffsets.clear()
                 replacementPngs.clear()
                 deletedEntryKeys.clear()
+                deleteSelectionKeys.clear()
+                bulkDeleteMode = false
                 renamedEntries.clear()
                 message = "${wadInfo?.type ?: "WAD"} · cambios guardados en la copia exportada"
             }.onFailure {
@@ -560,12 +567,35 @@ private fun DeuTexScreen(nativeStatus: String) {
                         }
                     }
                     val selectedCount = selectedGraphicKeys.values.count { it }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            enabled = selectedCount > 0 && wadBytes != null,
+                    val deleteSelectedCount = deleteSelectionKeys.values.count { it }
+                    if (bulkDeleteMode) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                enabled = deleteSelectedCount > 0,
+                                onClick = { showBulkDeleteConfirm = true },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Eliminar $deleteSelectedCount") }
+                            TextButton(onClick = {
+                                if (deleteSelectedCount == filteredEntries.size) deleteSelectionKeys.clear()
+                                else filteredEntries.forEach { deleteSelectionKeys[entryKey(it.value)] = true }
+                            }) { Text("Seleccionar visibles") }
+                            TextButton(onClick = {
+                                deleteSelectionKeys.clear()
+                                bulkDeleteMode = false
+                            }) { Text("Cancelar") }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                enabled = selectedCount > 0 && wadBytes != null,
                             onClick = {
                                 val source = wadBytes
                                 if (source != null) {
@@ -613,13 +643,23 @@ private fun DeuTexScreen(nativeStatus: String) {
                             },
                             modifier = Modifier.weight(1f)
                         ) { Text("Exportar $selectedCount a ZIP") }
-                        TextButton(onClick = {
-                            if (selectedCount == filteredEntries.size) selectedGraphicKeys.clear()
-                            else filteredEntries.forEach { selectedGraphicKeys[entryKey(it.value)] = true }
-                        }) { Text("Seleccionar visibles") }
+                            TextButton(onClick = {
+                                if (selectedCount == filteredEntries.size) selectedGraphicKeys.clear()
+                                else filteredEntries.forEach { selectedGraphicKeys[entryKey(it.value)] = true }
+                            }) { Text("Seleccionar visibles") }
+                        }
+                        TextButton(
+                            onClick = {
+                                selectedGraphicKeys.clear()
+                                deleteSelectionKeys.clear()
+                                bulkDeleteMode = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Seleccionar recursos para eliminar") }
                     }
                     Text(
-                        "Mostrando ${filteredEntries.size} de ${info.entries.size} recursos · Marca los gráficos para exportarlos juntos",
+                        if (bulkDeleteMode) "Modo eliminación · Selecciona recursos y confirma antes de borrarlos"
+                        else "Mostrando ${filteredEntries.size} de ${info.entries.size} recursos · Marca los gráficos para exportarlos juntos",
                         style = MaterialTheme.typography.labelMedium
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -627,21 +667,29 @@ private fun DeuTexScreen(nativeStatus: String) {
                         Text("Tamaño", style = MaterialTheme.typography.titleSmall)
                     }
                     Divider()
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
                         items(
                             items = filteredEntries,
                             key = { indexed -> "${indexed.value.offset}:${indexed.value.name}:${indexed.index}" },
                             contentType = { "wad_entry" }
                         ) { indexed ->
                             val entry = indexed.value
+                            val rowKey = entryKey(entry)
                             Row(
-                                Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                                Modifier.fillMaxWidth().padding(vertical = 3.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Checkbox(
-                                    checked = selectedGraphicKeys[entryKey(entry)] == true,
-                                    onCheckedChange = { checked -> selectedGraphicKeys[entryKey(entry)] = checked }
+                                    checked = if (bulkDeleteMode) deleteSelectionKeys[rowKey] == true
+                                    else selectedGraphicKeys[rowKey] == true,
+                                    onCheckedChange = { checked ->
+                                        if (bulkDeleteMode) deleteSelectionKeys[rowKey] = checked
+                                        else selectedGraphicKeys[rowKey] = checked
+                                    }
                                 )
                                 Column(
                                     Modifier.weight(1f).clickable {
@@ -649,7 +697,12 @@ private fun DeuTexScreen(nativeStatus: String) {
                                         selectedEntry = entry
                                     }
                                 ) {
-                                    Text(text = "${indexed.index + 1}. ${entry.name}", maxLines = 1)
+                                    Text(
+                                        text = "${indexed.index + 1}. ${entry.name}" +
+                                            if (deletedEntryKeys[rowKey] == true) " · ELIMINAR" else "",
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
                                 }
                                 Text(formatByteSize(entry.size), style = MaterialTheme.typography.bodySmall)
                             }
@@ -753,6 +806,34 @@ private fun DeuTexScreen(nativeStatus: String) {
                         }
                     }
                 }
+            }
+        )
+    }
+
+    if (showBulkDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteConfirm = false },
+            title = { Text("Eliminar recursos") },
+            text = {
+                Text("Se eliminarán $deleteSelectedCount recursos del WAD al exportar. Esta acción no se puede deshacer dentro de esta sesión. ¿Continuar?")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteSelectionKeys.filterValues { it }.keys.toList().forEach { key ->
+                        deletedEntryKeys[key] = true
+                        replacementPngs.remove(key)
+                        editedOffsets.remove(key)
+                        selectedGraphicKeys.remove(key)
+                    }
+                    val removed = deleteSelectedCount
+                    deleteSelectionKeys.clear()
+                    bulkDeleteMode = false
+                    showBulkDeleteConfirm = false
+                    message = "$removed recursos marcados para eliminar. Exporta el WAD para aplicar los cambios."
+                }) { Text("Eliminar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkDeleteConfirm = false }) { Text("Cancelar") }
             }
         )
     }
